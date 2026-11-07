@@ -68,6 +68,13 @@ pub struct Preferences {
     /// whisper's code ("id", "de", ...). `None` is whisper's to hear, and
     /// so is a code whisper no longer knows.
     pub caption_language: Option<String>,
+    /// The captions sheet's look, by its row; `None` before one is picked.
+    pub caption_preset: Option<usize>,
+    /// Words the captions sheet puts on screen at a time: 0 the whole
+    /// phrase; `None` before one is picked.
+    pub caption_words: Option<usize>,
+    /// Whether captions light the word being said; `None` is on.
+    pub caption_highlight: Option<bool>,
     /// The chosen speech model id.
     pub tts_model: Option<String>,
     /// The chosen voice id.

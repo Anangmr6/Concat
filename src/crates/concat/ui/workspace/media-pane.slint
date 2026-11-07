@@ -1785,6 +1785,9 @@ export component MediaPane inherits Rectangle {
     callback captions-language-changed(index: int);
     callback captions-placement-changed(index: int);
     callback captions-size-changed(index: int);
+    callback captions-preset-changed(index: int);
+    callback captions-words-changed(index: int);
+    callback captions-highlight-toggled(on: bool);
     callback captions-begin();
     callback captions-cancel();
     callback captions-import-srt();
@@ -2685,6 +2688,9 @@ export component MediaPane inherits Rectangle {
                         language-changed(index) => { root.captions-language-changed(index); }
                         placement-changed(index) => { root.captions-placement-changed(index); }
                         size-changed(index) => { root.captions-size-changed(index); }
+                        preset-changed(index) => { root.captions-preset-changed(index); }
+                        words-changed(index) => { root.captions-words-changed(index); }
+                        highlight-toggled(on) => { root.captions-highlight-toggled(on); }
                         begin => { root.captions-begin(); }
                         cancel => { root.captions-cancel(); }
                         import-srt => { root.captions-import-srt(); }

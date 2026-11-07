@@ -20,10 +20,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use concat_project::Command;
-use concat_project::model::{ClipKind, TextStyle};
+use concat_project::model::{ClipKind, RunStyle, TextCase, TextRun, TextStyle};
 use concat_project::srt;
 use concat_speech::JobStage;
-use concat_speech::transcribe::Segment;
+use concat_speech::transcribe::{Segment, Word, spread_words};
 
 use crate::host::{on_ui_in_project, spawn_in_project};
 use crate::i18n::{t, tf};
@@ -65,6 +65,13 @@ pub enum CaptionsMsg {
     LanguageChanged(i32),
     PlacementChanged(i32),
     SizeChanged(i32),
+    /// Row in the look list; see [`caption_look`].
+    PresetChanged(i32),
+    /// Row in the words-at-a-time control: 0 the whole phrase, then 1, 2
+    /// and 3 words.
+    WordsChanged(i32),
+    /// The "Highlight the spoken word" switch.
+    HighlightToggled(bool),
     /// Run the pass the sheet describes.
     Begin,
     Cancel,
@@ -90,6 +97,11 @@ struct Subject {
     speed: f64,
     /// The look chosen when the run began.
     look: (f64, f64),
+    /// The look's row, words at a time and the highlight, as chosen when
+    /// the run began.
+    preset: usize,
+    words: usize,
+    highlight: bool,
     /// The transcriber model, and the thirty-second windows whisper reads
     /// the sound in: what the run's timing is kept by.
     model: String,
@@ -133,6 +145,13 @@ pub struct CaptionsPane {
     pub placement: usize,
     /// 0 small, 1 medium, 2 large.
     pub size: usize,
+    /// Row in the look list: see [`caption_look`].
+    pub preset: usize,
+    /// Words on screen at a time: 0 the whole phrase, else 1 to
+    /// [`MAX_WORDS`].
+    pub words: usize,
+    /// The word being said wears the look's highlight.
+    pub highlight: bool,
     pub running: bool,
     /// How far the running transcription looks.
     pub pace: Pace,
@@ -216,6 +235,21 @@ impl CaptionsPane {
                 self.placement = (index.max(0) as usize).min(2);
             }
             CaptionsMsg::SizeChanged(index) => self.size = (index.max(0) as usize).min(2),
+            CaptionsMsg::PresetChanged(index) => {
+                self.preset = (index.max(0) as usize).min(PRESETS - 1);
+                studio.prefs.caption_preset = Some(self.preset);
+                studio.prefs.save(&studio.host.dirs);
+            }
+            CaptionsMsg::WordsChanged(index) => {
+                self.words = (index.max(0) as usize).min(MAX_WORDS);
+                studio.prefs.caption_words = Some(self.words);
+                studio.prefs.save(&studio.host.dirs);
+            }
+            CaptionsMsg::HighlightToggled(on) => {
+                self.highlight = on;
+                studio.prefs.caption_highlight = Some(on);
+                studio.prefs.save(&studio.host.dirs);
+            }
             CaptionsMsg::Begin => {
                 if self.from_voice {
                     self.run_sound(studio);
@@ -241,23 +275,9 @@ impl CaptionsPane {
                         let Some(subject) = subject else {
                             return;
                         };
-                        let look = subject.look;
                         let base = studio.prefs.title_style.clone();
-                        let commands: Vec<Command> = segments
-                            .into_iter()
-                            .filter_map(|segment| {
-                                let text = segment.text.trim().to_owned();
-                                (!text.is_empty()).then(|| {
-                                    caption_clip(
-                                        text,
-                                        subject.start + segment.start / subject.speed,
-                                        ((segment.end - segment.start) / subject.speed).max(0.2),
-                                        look,
-                                        base.as_ref(),
-                                    )
-                                })
-                            })
-                            .collect();
+                        let look = caption_look(subject.preset, subject.look, base.as_ref());
+                        let commands = voice_commands(&segments, &subject, &look);
                         let count = commands.len();
                         self.open = false;
                         if count == 0 {
@@ -313,9 +333,9 @@ impl CaptionsPane {
                 return;
             }
         };
-        let look = self.look();
         let base = studio.prefs.title_style.clone();
-        let commands = srt_commands(cues, look, base.as_ref());
+        let look = caption_look(self.preset, self.look(), base.as_ref());
+        let commands = srt_commands(cues, &look);
         if commands.is_empty() {
             self.message = t("captions.noSubtitlesInFile");
             return;
@@ -478,6 +498,17 @@ impl CaptionsPane {
                 .filter(|code| language_row(Some(code)) > 0),
             placement: 0,
             size: 1,
+            preset: studio
+                .prefs
+                .caption_preset
+                .unwrap_or(DEFAULT_PRESET)
+                .min(PRESETS - 1),
+            words: studio
+                .prefs
+                .caption_words
+                .unwrap_or(DEFAULT_WORDS)
+                .min(MAX_WORDS),
+            highlight: studio.prefs.caption_highlight.unwrap_or(true),
             timings: std::mem::take(&mut self.timings),
             shown: self.shown,
             ..CaptionsPane::default()
@@ -514,13 +545,13 @@ impl CaptionsPane {
             self.message = t("captions.nothingToCaptionYet");
             return;
         }
-        let look = self.look();
-        let mut at = f64::from(studio.playhead);
         let base = studio.prefs.title_style.clone();
+        let look = caption_look(self.preset, self.look(), base.as_ref());
+        let mut at = f64::from(studio.playhead);
         let commands: Vec<Command> = lines
             .into_iter()
             .map(|(text, seconds)| {
-                let command = caption_clip(text, at, seconds, look, base.as_ref());
+                let command = caption_clip(text, at, seconds, &look, None);
                 at += seconds;
                 command
             })
@@ -590,6 +621,9 @@ impl CaptionsPane {
             start: clip.start,
             speed: clip.speed,
             look: self.look(),
+            preset: self.preset,
+            words: self.words,
+            highlight: self.highlight,
             model,
             windows,
         });
@@ -666,6 +700,9 @@ impl CaptionsPane {
             language_fixed: english_only,
             placement: self.placement as i32,
             size: self.size as i32,
+            preset: self.preset as i32,
+            words: self.words as i32,
+            highlight: self.highlight,
             running: self.running,
             progress: self.pace.floor,
             ceiling: self.pace.ceiling,
@@ -710,7 +747,7 @@ fn language_at(index: i32) -> Option<String> {
 /// Imported cues keep the file's timing, including captions shorter than
 /// generated speech segments. The title command applies the engine's minimum
 /// clip duration where needed.
-fn srt_commands(cues: Vec<srt::Cue>, look: (f64, f64), base: Option<&TextStyle>) -> Vec<Command> {
+fn srt_commands(cues: Vec<srt::Cue>, look: &CaptionLook) -> Vec<Command> {
     cues.into_iter()
         .filter(|cue| !cue.text.trim().is_empty())
         .map(|cue| {
@@ -719,7 +756,7 @@ fn srt_commands(cues: Vec<srt::Cue>, look: (f64, f64), base: Option<&TextStyle>)
                 cue.start,
                 cue.end - cue.start,
                 look,
-                base,
+                None,
             )
         })
         .collect()
@@ -861,45 +898,311 @@ fn source_label(name: &str, start: f64) -> String {
     }
 }
 
+/// How many caption looks the sheet offers; see [`caption_look`].
+pub const PRESETS: usize = 5;
+/// The look a first run gets: bold, upper case, the word said in green -
+/// the short-video look most people come for.
+const DEFAULT_PRESET: usize = 2;
+/// The most words the sheet puts on screen at a time, short of the whole
+/// phrase.
+pub const MAX_WORDS: usize = 3;
+/// Words at a time on a first run.
+const DEFAULT_WORDS: usize = 3;
+/// A shot shorter than this, in seconds, is folded into its neighbour: a
+/// frame or two of a word lit is a flicker, and a clip that short would be
+/// stretched over the next and pushed to another lane.
+const MIN_SHOT: f64 = 0.04;
+/// What each caption is cut short of the next by, in seconds: back to back
+/// in exact arithmetic, two clips can overlap by a rounding error and the
+/// second land on another lane. A millionth of a second is never a frame.
+const JOIN: f64 = 1e-6;
+
+/// The look captions are laid down in: the title's style at the caption's
+/// size, where it sits, and what the word being said wears over it.
+struct CaptionLook {
+    style: TextStyle,
+    offset_y: f64,
+    highlight: RunStyle,
+}
+
+/// The look at row `preset` of the sheet's list, at the size and place the
+/// sheet chose (`look`, as [`CaptionsPane::look`] gives it):
+///
+/// 0. Your title style - the kept look where there is one (family, weight,
+///    colours, stroke, shadow, background), the bundled face otherwise -
+///    with the word said in yellow.
+/// 1. Classic: white with a black outline; the word said in yellow.
+/// 2. Bold: Montserrat Black in capitals, a thick outline; the word said
+///    in green and a little bigger.
+/// 3. Box: white on a dark box, no outline; the word said in yellow.
+/// 4. Impact: Anton in capitals with an outline; the word said in red and
+///    a little bigger.
+///
+/// The faces are the ones Concat ships, so a caption reads the same on
+/// every machine.
+fn caption_look(preset: usize, look: (f64, f64), base: Option<&TextStyle>) -> CaptionLook {
+    let (offset_y, font_size) = look;
+    let plain = TextStyle {
+        content: String::new(),
+        font_size,
+        max_width: 0.0,
+        max_height: 0.0,
+        runs: Vec::new(),
+        ..TextStyle::default()
+    };
+    let lit = |color: &str, scale: Option<f64>| RunStyle {
+        color: Some(color.to_owned()),
+        font_scale: scale,
+        ..RunStyle::default()
+    };
+    let (style, highlight) = match preset {
+        1 => (
+            TextStyle {
+                font_family: "Hanken Grotesk".to_owned(),
+                font_weight: 700.0,
+                color: "#ffffff".to_owned(),
+                stroke_width: font_size * 0.12,
+                stroke_color: "#000000".to_owned(),
+                shadow: true,
+                ..plain
+            },
+            lit("#ffd400", None),
+        ),
+        2 => (
+            TextStyle {
+                font_family: "Montserrat".to_owned(),
+                font_weight: 900.0,
+                text_case: TextCase::Upper,
+                color: "#ffffff".to_owned(),
+                stroke_width: font_size * 0.18,
+                stroke_color: "#000000".to_owned(),
+                shadow: true,
+                ..plain
+            },
+            lit("#3ee05a", Some(1.12)),
+        ),
+        3 => (
+            TextStyle {
+                font_family: "Hanken Grotesk".to_owned(),
+                font_weight: 700.0,
+                color: "#ffffff".to_owned(),
+                stroke_width: 0.0,
+                shadow: false,
+                background: "#000000b8".to_owned(),
+                ..plain
+            },
+            lit("#ffd400", None),
+        ),
+        4 => (
+            TextStyle {
+                font_family: "Anton".to_owned(),
+                font_weight: 400.0,
+                text_case: TextCase::Upper,
+                color: "#ffffff".to_owned(),
+                stroke_width: font_size * 0.14,
+                stroke_color: "#000000".to_owned(),
+                shadow: true,
+                tracking: font_size * 0.03,
+                ..plain
+            },
+            lit("#ff3b3b", Some(1.1)),
+        ),
+        _ => (
+            match base {
+                Some(base) => TextStyle {
+                    content: String::new(),
+                    font_size,
+                    max_width: 0.0,
+                    max_height: 0.0,
+                    // Runs are some words' looks, and these are other words.
+                    runs: Vec::new(),
+                    ..base.clone()
+                },
+                None => TextStyle {
+                    font_family: "Hanken Grotesk".to_owned(),
+                    font_weight: 600.0,
+                    ..plain
+                },
+            },
+            lit("#ffd400", None),
+        ),
+    };
+    CaptionLook {
+        style,
+        offset_y,
+        highlight,
+    }
+}
+
 /// One caption as a title clip: its words, when and for how long, and
-/// its look.
+/// its look; `lit` is the stretch of the words, in characters, that wears
+/// the look's highlight - the word being said.
 fn caption_clip(
     text: String,
     start: f64,
     duration: f64,
-    look: (f64, f64),
-    base: Option<&TextStyle>,
+    look: &CaptionLook,
+    lit: Option<(usize, usize)>,
 ) -> Command {
-    let (offset_y, font_size) = look;
-    // The kept look where there is one - family, weight, colours, stroke,
-    // shadow, background - at the caption's own size and place; the
-    // bundled face otherwise.
-    let style = match base {
-        Some(base) => TextStyle {
-            content: text,
-            font_size,
-            max_width: 0.0,
-            max_height: 0.0,
-            // Runs are some words' looks, and these are other words.
-            runs: Vec::new(),
-            ..base.clone()
-        },
-        None => TextStyle {
-            content: text,
-            font_family: "Hanken Grotesk".to_owned(),
-            font_size,
-            font_weight: 600.0,
-            ..TextStyle::default()
-        },
-    };
+    let runs = lit
+        .filter(|(start, end)| end > start && !look.highlight.is_empty())
+        .map(|(start, end)| {
+            vec![TextRun {
+                start,
+                end,
+                style: look.highlight.clone(),
+            }]
+        })
+        .unwrap_or_default();
     Command::AddTextClip {
         track_id: None,
         above: true,
         start,
-        style: Some(style),
+        style: Some(TextStyle {
+            content: text,
+            runs,
+            ..look.style.clone()
+        }),
         duration: Some(duration),
-        offset_y: Some(offset_y),
+        offset_y: Some(look.offset_y),
     }
+}
+
+/// One caption as it is on screen: its words, from when to when in the
+/// transcribed sound's seconds, and the stretch of them lit, in
+/// characters, when one is.
+#[derive(Clone, Debug, PartialEq)]
+struct Shot {
+    text: String,
+    start: f64,
+    end: f64,
+    lit: Option<(usize, usize)>,
+}
+
+/// Whether a caption of a few words should end at `word`: a sentence, or
+/// a clause, ends there, so a short caption never runs one into the next.
+fn closes(word: &str) -> bool {
+    word.ends_with([
+        '.', '!', '?', ',', ';', ':', '…', '。', '！', '？', '，', '、',
+    ])
+}
+
+/// What was said as captions: each phrase whole (`words` 0) or a few
+/// words at a time, never across a sentence or a clause; and with
+/// `highlight`, one shot per word, the caption's words all on screen and
+/// the word being said lit. Shots shorter than [`MIN_SHOT`] are folded
+/// into the one before, or the one after when they open a caption.
+fn voice_shots(segments: &[Segment], words: usize, highlight: bool) -> Vec<Shot> {
+    let mut shots: Vec<Shot> = Vec::new();
+    for segment in segments {
+        let text = segment.text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        let timed: Vec<Word> = if segment.words.is_empty() {
+            spread_words(text, segment.start, segment.end)
+        } else {
+            segment.words.clone()
+        };
+        let mut groups: Vec<Vec<Word>> = Vec::new();
+        if words == 0 {
+            groups.push(timed);
+        } else {
+            let mut group: Vec<Word> = Vec::new();
+            for word in timed {
+                let close = closes(&word.text);
+                group.push(word);
+                if group.len() >= words || close {
+                    groups.push(std::mem::take(&mut group));
+                }
+            }
+            if !group.is_empty() {
+                groups.push(group);
+            }
+        }
+        for group in groups.into_iter().filter(|group| !group.is_empty()) {
+            let line = group
+                .iter()
+                .map(|word| word.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            let first = group.first().map_or(0.0, |word| word.start);
+            let last = group.last().map_or(first, |word| word.end);
+            if !highlight {
+                shots.push(Shot {
+                    text: line,
+                    start: first,
+                    end: last,
+                    lit: None,
+                });
+                continue;
+            }
+            let mut from = 0;
+            let mut caption: Vec<Shot> = Vec::with_capacity(group.len());
+            for (index, word) in group.iter().enumerate() {
+                let chars = word.text.chars().count();
+                caption.push(Shot {
+                    text: line.clone(),
+                    start: if index == 0 { first } else { word.start },
+                    end: group.get(index + 1).map_or(last, |next| next.start),
+                    lit: Some((from, from + chars)),
+                });
+                from += chars + 1;
+            }
+            shots.extend(fold_short(caption));
+        }
+    }
+    shots
+}
+
+/// One caption's shots with each shorter than [`MIN_SHOT`] folded into
+/// its neighbour: the one before it runs on over it, or for the first,
+/// the one after starts where it did.
+fn fold_short(caption: Vec<Shot>) -> Vec<Shot> {
+    let (Some(first), Some(last)) = (caption.first().cloned(), caption.last().cloned()) else {
+        return Vec::new();
+    };
+    let mut out: Vec<Shot> = Vec::with_capacity(caption.len());
+    let mut carry: Option<f64> = None;
+    for mut shot in caption {
+        if let Some(start) = carry.take() {
+            shot.start = start;
+        }
+        if shot.end - shot.start >= MIN_SHOT {
+            out.push(shot);
+        } else if let Some(previous) = out.last_mut() {
+            previous.end = shot.end;
+        } else {
+            carry = Some(shot.start);
+        }
+    }
+    // Every shot was short: the caption as one, its first word lit.
+    if out.is_empty() {
+        out.push(Shot {
+            end: last.end,
+            ..first
+        });
+    }
+    out
+}
+
+/// The finished transcription as title clips on the timeline: the
+/// subject's words and highlight, its timing turned into the timeline's
+/// by where the clip starts and how fast it plays.
+fn voice_commands(segments: &[Segment], subject: &Subject, look: &CaptionLook) -> Vec<Command> {
+    voice_shots(segments, subject.words, subject.highlight)
+        .into_iter()
+        .map(|shot| {
+            let start = subject.start + shot.start / subject.speed;
+            let mut duration = (shot.end - shot.start) / subject.speed - JOIN;
+            // A whole phrase on its own is held a moment at least, as
+            // captions always were; a lit word runs exactly to the next.
+            if shot.lit.is_none() && subject.words == 0 {
+                duration = duration.max(0.2);
+            }
+            caption_clip(shot.text, start, duration, look, shot.lit)
+        })
+        .collect()
 }
 
 /// Longest a caption line gets before it is wrapped: about what two lines
@@ -1000,7 +1303,8 @@ mod tests {
         let cues = concat_project::srt::parse(
             "1\n00:00:01,000 --> 00:00:01,100\nOlá\nAção\n\n2\n00:00:02,000 --> 00:00:03,000\nFim\n",
         ).unwrap();
-        let commands = super::srt_commands(cues.clone(), (0.35, 0.04), None);
+        let look = super::caption_look(0, (0.35, 0.04), None);
+        let commands = super::srt_commands(cues.clone(), &look);
         let mut editor = concat_project::Editor::new();
         editor
             .apply(concat_project::Command::Batch { commands })
@@ -1078,7 +1382,48 @@ mod tests {
             end: 1.0,
             text: "  ".into(),
         }];
-        assert!(super::srt_commands(cues, (0.35, 0.04), None).is_empty());
+        let look = super::caption_look(0, (0.35, 0.04), None);
+        assert!(super::srt_commands(cues, &look).is_empty());
+    }
+
+    /// A phrase is captioned whole or a few words at a time, never across
+    /// a clause; lit, it is a shot per word, back to back from the
+    /// phrase's start to its end, each lighting its own word by character.
+    #[test]
+    fn words_go_up_a_few_at_a_time_and_light_as_they_are_said() {
+        let segment = |start: f64, end: f64, text: &str| concat_speech::transcribe::Segment {
+            start,
+            end,
+            text: text.into(),
+            words: Vec::new(),
+        };
+        let said = [segment(0.0, 2.0, "Halo semua, apa kabar hari ini?")];
+        let whole = super::voice_shots(&said, 0, false);
+        assert_eq!(whole.len(), 1);
+        assert_eq!(whole[0].text, "Halo semua, apa kabar hari ini?");
+
+        let three: Vec<String> = super::voice_shots(&said, 3, false)
+            .into_iter()
+            .map(|shot| shot.text)
+            .collect();
+        assert_eq!(three, ["Halo semua,", "apa kabar hari", "ini?"]);
+
+        let lit = super::voice_shots(&said, 3, true);
+        assert_eq!(lit.len(), 6);
+        assert_eq!(lit[1].lit, Some((5, 11)));
+        assert_eq!(lit[4].lit, Some((10, 14)));
+        assert_eq!(lit[0].start, 0.0);
+        assert_eq!(lit[5].end, 2.0);
+        assert!(lit.windows(2).all(|pair| pair[0].end == pair[1].start));
+
+        // Too quick to light word by word: one shot, the first word lit.
+        let quick = super::voice_shots(&[segment(0.0, 0.05, "a b c")], 0, true);
+        assert_eq!(quick.len(), 1);
+        assert_eq!((quick[0].start, quick[0].end), (0.0, 0.05));
+
+        // Counted in characters, not bytes.
+        let accents = super::voice_shots(&[segment(0.0, 1.0, "Olá ação")], 0, true);
+        assert_eq!(accents[1].lit, Some((4, 8)));
     }
 
     /// A clip in the voice list is its file and where it starts, in

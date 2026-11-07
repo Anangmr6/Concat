@@ -52,6 +52,12 @@ export struct CaptionsSheetData {
     placement: int,
     /// 0 Small, 1 Medium, 2 Large
     size: int,
+    /// Row in the look list: Your title style, Classic, Bold, Box, Impact.
+    preset: int,
+    /// Words on screen at a time: 0 the whole phrase, then 1, 2, 3.
+    words: int,
+    /// The word being said is lit in the look's highlight.
+    highlight: bool,
     running: bool,
     /// 0..1: where the transcription surely is.
     progress: float,
@@ -88,6 +94,9 @@ export component CaptionsForm inherits VerticalLayout {
     callback language-changed(index: int);
     callback placement-changed(index: int);
     callback size-changed(index: int);
+    callback preset-changed(index: int);
+    callback words-changed(index: int);
+    callback highlight-toggled(on: bool);
     callback begin();
     callback cancel();
     callback import-srt();
@@ -237,6 +246,21 @@ export component CaptionsForm inherits VerticalLayout {
             title: I18n.t("captions.captions");
 
             DialogRow {
+                label: I18n.t("captions.look");
+                Select {
+                    options: [
+                        I18n.t("captions.lookYourStyle"),
+                        I18n.t("captions.lookClassic"),
+                        I18n.t("captions.lookBold"),
+                        I18n.t("captions.lookBox"),
+                        I18n.t("captions.lookImpact"),
+                    ];
+                    current: root.data.preset;
+                    changed(index) => { root.preset-changed(index); }
+                }
+            }
+
+            DialogRow {
                 label: I18n.t("captions.placement");
                 SegmentedControl {
                     options: [I18n.t("common.bottom"), I18n.t("captions.centre"), I18n.t("common.top")];
@@ -254,9 +278,44 @@ export component CaptionsForm inherits VerticalLayout {
                 }
             }
 
+            // How many words are up at once, and whether the word being
+            // said is lit: the voice's words are timed one by one, a
+            // script's are not.
+            if root.from-voice: DialogRow {
+                label: I18n.t("captions.wordsAtATime");
+                SegmentedControl {
+                    options: [I18n.t("captions.wholePhrase"), "1", "2", "3"];
+                    current: root.data.words;
+                    changed(index) => { root.words-changed(index); }
+                }
+            }
+
+            if root.from-voice: HorizontalLayout {
+                spacing: 10px;
+
+                Text {
+                    horizontal-stretch: 1;
+                    text: I18n.t("captions.highlightSpokenWord");
+                    color: Theme.fg;
+                    font-size: Theme.fs;
+                    vertical-alignment: center;
+                    wrap: word-wrap;
+                }
+
+                VerticalLayout {
+                    alignment: center;
+                    Switch {
+                        checked: root.data.highlight;
+                        toggled(on) => { root.highlight-toggled(on); }
+                    }
+                }
+            }
+
             Text {
                 text: root.from-voice
-                    ? I18n.t("captions.oneTitlePerPhrase")
+                    ? (root.data.highlight
+                        ? I18n.t("captions.wordLitAsSaid")
+                        : I18n.t("captions.oneTitlePerPhrase"))
                     : I18n.t("captions.oneTitlePerSentence");
                 color: Theme.fg-dim;
                 font-size: Theme.fs-sm;
@@ -403,6 +462,9 @@ export component CaptionsDialog inherits Modal {
     callback language-changed(index: int);
     callback placement-changed(index: int);
     callback size-changed(index: int);
+    callback preset-changed(index: int);
+    callback words-changed(index: int);
+    callback highlight-toggled(on: bool);
     callback begin();
     callback cancel();
     callback import-srt();
@@ -425,6 +487,9 @@ export component CaptionsDialog inherits Modal {
         language-changed(index) => { root.language-changed(index); }
         placement-changed(index) => { root.placement-changed(index); }
         size-changed(index) => { root.size-changed(index); }
+        preset-changed(index) => { root.preset-changed(index); }
+        words-changed(index) => { root.words-changed(index); }
+        highlight-toggled(on) => { root.highlight-toggled(on); }
         begin => { root.begin(); }
         cancel => { root.cancel(); }
         import-srt => { root.import-srt(); }

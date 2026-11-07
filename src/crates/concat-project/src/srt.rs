@@ -171,7 +171,33 @@ pub fn title_cues(timeline: &Timeline, track_id: Option<&str>) -> Vec<Cue> {
         })
         .collect();
     cues.sort_by(|a, b| a.start.total_cmp(&b.start));
-    cues
+    join_lit_words(cues)
+}
+
+/// The furthest apart, in seconds, two cues of the same words can be and
+/// still be one: a caption that lights its words one at a time is laid
+/// down as a title per word, the same words each time, cut a hair short
+/// of the next so the two never share a lane.
+const JOIN_GAP: f64 = 0.002;
+
+/// Cues with the same words back to back as one cue over them all: what a
+/// caption lighting its words one by one says as a subtitle, which knows
+/// no highlight, is its words, once.
+fn join_lit_words(cues: Vec<Cue>) -> Vec<Cue> {
+    let mut joined: Vec<Cue> = Vec::with_capacity(cues.len());
+    for cue in cues {
+        match joined.last_mut() {
+            Some(last)
+                if last.text == cue.text
+                    && cue.start >= last.start
+                    && cue.start - last.end <= JOIN_GAP =>
+            {
+                last.end = last.end.max(cue.end);
+            }
+            _ => joined.push(cue),
+        }
+    }
+    joined
 }
 
 /// The lane with the most titles on it - the first such lane, top down,
@@ -216,6 +242,32 @@ mod tests {
     use super::{Cue, busiest_title_lane, parse, title_cues, title_lanes, write};
     use crate::commands::Command;
     use crate::editor::Editor;
+
+    /// A caption that lights its words one by one is a title per word,
+    /// the same words each time: written out, it is one cue. The same
+    /// words apart in time are two.
+    #[test]
+    fn a_caption_lit_word_by_word_is_one_cue() {
+        let cue = |start: f64, end: f64, text: &str| Cue {
+            start,
+            end,
+            text: text.into(),
+        };
+        let joined = super::join_lit_words(vec![
+            cue(0.0, 0.5 - 1e-6, "a b"),
+            cue(0.5, 1.0 - 1e-6, "a b"),
+            cue(1.0, 2.0, "c"),
+            cue(3.0, 4.0, "c"),
+        ]);
+        assert_eq!(
+            joined,
+            [
+                cue(0.0, 1.0 - 1e-6, "a b"),
+                cue(1.0, 2.0, "c"),
+                cue(3.0, 4.0, "c")
+            ]
+        );
+    }
     use crate::model::TextStyle;
 
     fn cue(start: f64, end: f64, text: &str) -> Cue {

@@ -116,6 +116,9 @@ export component Seat inherits Rectangle {
             captions-language-changed(index) => { Editor.captions-language-changed(index); }
             captions-placement-changed(index) => { Editor.captions-placement-changed(index); }
             captions-size-changed(index) => { Editor.captions-size-changed(index); }
+            captions-preset-changed(index) => { Editor.captions-preset-changed(index); }
+            captions-words-changed(index) => { Editor.captions-words-changed(index); }
+            captions-highlight-toggled(on) => { Editor.captions-highlight-toggled(on); }
             captions-begin => { Editor.captions-begin(); }
             captions-cancel => { Editor.captions-cancel(); }
             captions-import-srt => { Editor.captions-import-srt(); }

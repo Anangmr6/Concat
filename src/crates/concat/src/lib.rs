@@ -2315,6 +2315,15 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     app.on_captions_size_changed(on_window!(|state, index: i32| {
         state.handle(Msg::Captions(CaptionsMsg::SizeChanged(index)));
     }));
+    app.on_captions_preset_changed(on_window!(|state, index: i32| {
+        state.handle(Msg::Captions(CaptionsMsg::PresetChanged(index)));
+    }));
+    app.on_captions_words_changed(on_window!(|state, index: i32| {
+        state.handle(Msg::Captions(CaptionsMsg::WordsChanged(index)));
+    }));
+    app.on_captions_highlight_toggled(on_window!(|state, on: bool| {
+        state.handle(Msg::Captions(CaptionsMsg::HighlightToggled(on)));
+    }));
     app.on_captions_begin(on_window!(|state| {
         state.handle(Msg::Captions(CaptionsMsg::Begin));
     }));
@@ -2351,6 +2360,15 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     }));
     editor.on_captions_size_changed(on_window!(|state, index: i32| {
         state.handle(Msg::Captions(CaptionsMsg::SizeChanged(index)));
+    }));
+    editor.on_captions_preset_changed(on_window!(|state, index: i32| {
+        state.handle(Msg::Captions(CaptionsMsg::PresetChanged(index)));
+    }));
+    editor.on_captions_words_changed(on_window!(|state, index: i32| {
+        state.handle(Msg::Captions(CaptionsMsg::WordsChanged(index)));
+    }));
+    editor.on_captions_highlight_toggled(on_window!(|state, on: bool| {
+        state.handle(Msg::Captions(CaptionsMsg::HighlightToggled(on)));
     }));
     editor.on_captions_begin(on_window!(|state| {
         state.handle(Msg::Captions(CaptionsMsg::Begin));
