@@ -112,6 +112,10 @@ fn main() {
     // Watched, because a library built the other way would link wrong.
     println!("cargo:rerun-if-env-changed=GGML_BACKEND_DL");
     println!("cargo:rerun-if-env-changed=GGML_CPU_ALL_VARIANTS");
+    // Concat fork: GGML_VULKAN=ON in the environment adds the Vulkan GPU
+    // backend - a module beside the CPU ones in the shared build - so
+    // transcription runs on the graphics card where there is one.
+    println!("cargo:rerun-if-env-changed=GGML_VULKAN");
     let backend_dl = env::var("GGML_BACKEND_DL").is_ok_and(|value| {
         matches!(
             value.to_ascii_uppercase().as_str(),

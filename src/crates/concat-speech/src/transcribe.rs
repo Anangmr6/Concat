@@ -1018,8 +1018,23 @@ impl Transcriber {
             if !recipe.gpu {
                 context_params.use_gpu(false);
             }
-            let context = WhisperContext::new_with_params(&model_path, context_params)
-                .map_err(|error| format!("could not load the model: {error}"))?;
+            // On the GPU where the build has one (Vulkan on Windows, in
+            // this fork); a GPU the model will not load on - a driver too
+            // old, a card out of memory - is not a reason to fail, so it
+            // loads on the CPU instead, as it always did.
+            let context = match WhisperContext::new_with_params(&model_path, context_params) {
+                Ok(context) => context,
+                Err(error) if recipe.gpu => {
+                    log::warn!(
+                        "whisper: the model did not load on the GPU ({error}); using the CPU"
+                    );
+                    let mut on_cpu = WhisperContextParameters::default();
+                    on_cpu.use_gpu(false);
+                    WhisperContext::new_with_params(&model_path, on_cpu)
+                        .map_err(|error| format!("could not load the model: {error}"))?
+                }
+                Err(error) => return Err(format!("could not load the model: {error}")),
+            };
             *loaded = Some(LoadedModel {
                 id: request.model_id.clone(),
                 gpu: recipe.gpu,

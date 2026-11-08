@@ -71,6 +71,9 @@ ggml-cpu-sandybridge.dll       16    0     0      0          0
 ggml-cpu-ivybridge.dll         16    0     0      0          0
 ggml.dll                       32    0     0      0          0
 whisper.dll                    48    0     0      0          0
+# This fork's Vulkan backend: host code only (the kernels run on the GPU);
+# MSVC's STL may bring its own AVX2 paths, so counted but only warned on.
+ggml-vulkan.dll                ~64   ~0    ~0     ~0         ~0
 
 # Concat itself. It holds dispatched code of its own - memchr, aho-corasick
 # and ring choose AVX2 or BMI2 paths at run time (ring's hand-written

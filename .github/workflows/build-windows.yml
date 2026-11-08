@@ -148,6 +148,10 @@ jobs:
       # answer - built for Haswell outright - is kept for a target that
       # only runs on AVX2 machines.
       GGML_BACKEND_DL: ${{ matrix.ggml == 'variants' && 'ON' || 'OFF' }}
+      # This fork: whisper on the graphics card through Vulkan, as one more
+      # ggml module (ggml-vulkan.dll) the app loads beside the CPU ones. A
+      # machine without a Vulkan driver keeps transcribing on the CPU.
+      GGML_VULKAN: "ON"
       GGML_CPU_ALL_VARIANTS: ${{ matrix.ggml == 'variants' && 'ON' || 'OFF' }}
       GGML_AVX2: ${{ matrix.ggml == 'haswell' && 'ON' || 'OFF' }}
       GGML_FMA: ${{ matrix.ggml == 'haswell' && 'ON' || 'OFF' }}
@@ -318,6 +322,23 @@ jobs:
           } >> "$GITHUB_ENV"
 
       # ── Windows ────────────────────────────────────────────────────────
+      # The Vulkan SDK, for ggml's Vulkan backend: its headers, import
+      # library and glslc, the shader compiler ggml builds its kernels with.
+      - name: Vulkan SDK (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        timeout-minutes: 20
+        run: |
+          $ErrorActionPreference = "Stop"
+          $ProgressPreference = "SilentlyContinue"
+          $version = "1.4.304.1"
+          Invoke-WebRequest -Uri "https://sdk.lunarg.com/sdk/download/$version/windows/VulkanSDK-$version-Installer.exe" -OutFile VulkanSDK.exe
+          Start-Process -Wait -FilePath .\VulkanSDK.exe -ArgumentList "--root", "C:\VulkanSDK", "--accept-licenses", "--default-answer", "--confirm-command", "install"
+          Remove-Item VulkanSDK.exe
+          if (-not (Test-Path "C:\VulkanSDK\Lib\vulkan-1.lib")) { throw "the Vulkan SDK did not install" }
+          "VULKAN_SDK=C:\VulkanSDK" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "C:\VulkanSDK\Bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
       # LLVM: libclang for bindgen on both architectures, the C/C++
       # compiler on arm64, and llvm-objdump for the instruction-set scan.
       # LLVM's own installer for the architecture, at the version deps.lock
@@ -426,7 +447,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: src
-          key: ${{ matrix.target }}
+          key: ${{ matrix.target }}-vulkan
           env-vars: CARGO CC CFLAGS CXX CMAKE RUST GGML ORT
 
       # The shipping profile: fat LTO, panic=abort, stripped. See the
@@ -881,6 +902,7 @@ jobs:
             foreach ($module in "x64", "sandybridge", "haswell") {
               if (-not (Test-Path "$dir\ggml-cpu-$module.dll")) { throw "ggml-cpu-$module.dll is missing from the build" }
             }
+            if (-not (Test-Path "$dir\ggml-vulkan.dll")) { throw "ggml-vulkan.dll is missing from the build" }
           }
           Copy-Item LICENSE, THIRD_PARTY_NOTICES.md $dir
           # The Visual C++ runtime DLLs anything in the folder imports, from
